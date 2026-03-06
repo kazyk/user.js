@@ -44,6 +44,23 @@
     if (!el) return;
     if (hidden) el.classList.add(HIDE_CLASS);
     else el.classList.remove(HIDE_CLASS);
+
+    const cell = el.closest('[data-testid="cellInnerDiv"]');
+    if (!cell) return;
+    const prev = cell.previousElementSibling;
+    const sep =
+      prev &&
+      prev.dataset.testid === "cellInnerDiv" &&
+      !prev.querySelector('article[data-testid="tweet"]')
+        ? prev
+        : null;
+    if (hidden) {
+      cell.classList.add(HIDE_CLASS);
+      if (sep) sep.classList.add(HIDE_CLASS);
+    } else {
+      cell.classList.remove(HIDE_CLASS);
+      if (sep) sep.classList.remove(HIDE_CLASS);
+    }
   }
 
   function evaluate() {
@@ -51,13 +68,17 @@
     if (!isStatusUrl()) return;
 
     // Collect tweets in document order.
-    const tweets = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+    const tweets = Array.from(
+      document.querySelectorAll('article[data-testid="tweet"]'),
+    );
     if (tweets.length === 0) return;
 
     const firstTweet = tweets[0];
 
     // OP link is taken from the first tweet's User-Name area
-    const firstUserLink = firstTweet.querySelector('div[data-testid="User-Name"] a[href]');
+    const firstUserLink = firstTweet.querySelector(
+      'div[data-testid="User-Name"] a[href]',
+    );
     const opHref = normalizeHref(firstUserLink?.getAttribute("href"));
 
     // Always ensure the first tweet is visible
@@ -73,7 +94,9 @@
       const t = tweets[i];
 
       // Condition 2: contains verified icon svg
-      const hasVerifiedIcon = !!t.querySelector('svg[data-testid="icon-verified"]');
+      const hasVerifiedIcon = !!t.querySelector(
+        'svg[data-testid="icon-verified"]',
+      );
 
       if (!hasVerifiedIcon) {
         setHidden(t, false);
@@ -84,9 +107,9 @@
       const userNameDiv = t.querySelector('div[data-testid="User-Name"]');
       const hasOpLinkInsideUserName =
         !!userNameDiv &&
-        Array.from(userNameDiv.querySelectorAll('a[href]'))
-          .map(a => normalizeHref(a.getAttribute("href")))
-          .some(h => h === opHref);
+        Array.from(userNameDiv.querySelectorAll("a[href]"))
+          .map((a) => normalizeHref(a.getAttribute("href")))
+          .some((h) => h === opHref);
 
       // Hide iff:
       // - verified (cond2)
@@ -101,7 +124,7 @@
     if (scheduled) return;
     scheduled = true;
     // Micro-debounce to coalesce multiple DOM mutations
-    setTimeout(evaluate, 0);
+    setTimeout(evaluate, 5);
   }
 
   function disconnectObserver() {
@@ -121,8 +144,9 @@
   }
 
   function unhideAll() {
-    document.querySelectorAll(`article[data-testid="tweet"].${HIDE_CLASS}`)
-      .forEach(el => el.classList.remove(HIDE_CLASS));
+    document
+      .querySelectorAll(`.${HIDE_CLASS}`)
+      .forEach((el) => el.classList.remove(HIDE_CLASS));
   }
 
   function onUrlPossiblyChanged() {
