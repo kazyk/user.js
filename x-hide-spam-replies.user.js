@@ -2,7 +2,7 @@
 // @name         X status: hide verified non-OP tweets (SPA safe)
 // @namespace    https://example.invalid/
 // @version      1.0.0
-// @description  On https://x.com/*/status/* pages, hide verified tweets that are not the first tweet and not by the OP (based on User-Name link match).
+// @description  On https://x.com/*/status/* pages, hide verified tweets that are not the first tweet and not by the OP or reply-to targets (based on User-Name link match).
 // @match        https://x.com/*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -90,10 +90,44 @@
       return;
     }
 
+    // Build set of allowed user hrefs: OP + URL author + their reply-to targets
+    const allowedHrefs = new Set([opHref]);
+
+    // Also whitelist the status page author from URL
+    const urlParts = location.pathname.split("/");
+    if (urlParts[1]) {
+      const h = normalizeHref("/" + urlParts[1]);
+      if (h) allowedHrefs.add(h);
+    }
+
+    // Collect "Replying to @user" targets from OP/URL-author tweets
+    const initialAllowed = new Set(allowedHrefs);
+    for (const t of tweets) {
+      const uDiv = t.querySelector('div[data-testid="User-Name"]');
+      if (!uDiv) continue;
+      const isByAllowed = Array.from(uDiv.querySelectorAll("a[href]"))
+        .map((a) => normalizeHref(a.getAttribute("href")))
+        .some((h) => initialAllowed.has(h));
+      if (!isByAllowed) continue;
+      const tweetTextDiv = t.querySelector('div[data-testid="tweetText"]');
+      for (const a of t.querySelectorAll("a[href]")) {
+        if (uDiv.contains(a)) continue;
+        if (tweetTextDiv && tweetTextDiv.contains(a)) continue;
+        const href = a.getAttribute("href");
+        if (
+          href &&
+          /^\/[a-zA-Z0-9_]+$/.test(href) &&
+          a.textContent.trim().startsWith("@")
+        ) {
+          const h = normalizeHref(href);
+          if (h) allowedHrefs.add(h);
+        }
+      }
+    }
+
     for (let i = 1; i < tweets.length; i++) {
       const t = tweets[i];
 
-      // Condition 2: contains verified icon svg
       const hasVerifiedIcon = !!t.querySelector(
         'svg[data-testid="icon-verified"]',
       );
@@ -103,19 +137,14 @@
         continue;
       }
 
-      // Condition 4: inside this tweet's User-Name div, it DOES NOT include a link equal to opHref
       const userNameDiv = t.querySelector('div[data-testid="User-Name"]');
-      const hasOpLinkInsideUserName =
+      const hasAllowedLink =
         !!userNameDiv &&
         Array.from(userNameDiv.querySelectorAll("a[href]"))
           .map((a) => normalizeHref(a.getAttribute("href")))
-          .some((h) => h === opHref);
+          .some((h) => allowedHrefs.has(h));
 
-      // Hide iff:
-      // - verified (cond2)
-      // - not first tweet (cond3 already by i>=1)
-      // - does NOT have OP link within its User-Name area (cond4)
-      const shouldHide = !hasOpLinkInsideUserName;
+      const shouldHide = !hasAllowedLink;
       setHidden(t, shouldHide);
     }
   }
