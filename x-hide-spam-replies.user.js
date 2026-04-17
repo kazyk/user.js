@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         X status: hide verified non-OP tweets (SPA safe)
+// @name         X status: hide verified replies (SPA safe)
 // @namespace    https://example.invalid/
-// @version      1.0.0
-// @description  On https://x.com/*/status/* pages, hide verified tweets that are not the first tweet and not by the OP or reply-to targets (based on User-Name link match).
+// @version      2.1.0
+// @description  On https://x.com/*/status/* pages, hide verified-user tweets in the reply section. Ancestors (tweets the OP is replying to) and OP's own tweets stay visible.
 // @match        https://x.com/*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -11,8 +11,8 @@
 (() => {
   "use strict";
 
-  const URL_RE = /^https:\/\/x\.com\/[^/]+\/status\/\d+(?:[/?#]|$)$/;
-  const HIDE_CLASS = "tm-hide-verified-nonop";
+  const URL_RE = /^https:\/\/x\.com\/([^/]+)\/status\/(\d+)/;
+  const HIDE_CLASS = "tm-hide-verified-reply";
 
   GM_addStyle(`
     .${HIDE_CLASS} { display: none !important; }
@@ -22,13 +22,14 @@
   let lastHref = location.href;
   let scheduled = false;
 
+  // Per-status-URL state
+  let currentStatusKey = null;
+  let ancestorIds = new Set();
+
   function normalizeHref(href) {
     if (!href) return null;
     try {
-      // X often uses relative paths like "/someuser"
       const u = new URL(href, location.origin);
-      // We only need "identity" at the profile path level.
-      // Normalize: origin + pathname (trim trailing slash)
       const path = (u.pathname || "").replace(/\/+$/, "");
       return `${u.origin}${path}`;
     } catch {
@@ -36,123 +37,113 @@
     }
   }
 
-  function isStatusUrl() {
-    return URL_RE.test(location.href);
+  function parseStatusUrl() {
+    const m = location.href.match(URL_RE);
+    if (!m) return null;
+    return { user: m[1], id: m[2] };
   }
 
   function setHidden(el, hidden) {
     if (!el) return;
-    if (hidden) el.classList.add(HIDE_CLASS);
-    else el.classList.remove(HIDE_CLASS);
-
-    const cell = el.closest('[data-testid="cellInnerDiv"]');
-    if (!cell) return;
-    const prev = cell.previousElementSibling;
-    const sep =
-      prev &&
-      prev.dataset.testid === "cellInnerDiv" &&
-      !prev.querySelector('article[data-testid="tweet"]')
-        ? prev
-        : null;
+    const cell = el.closest('[data-testid="cellInnerDiv"]') || el;
     if (hidden) {
+      el.classList.add(HIDE_CLASS);
       cell.classList.add(HIDE_CLASS);
-      if (sep) sep.classList.add(HIDE_CLASS);
     } else {
+      el.classList.remove(HIDE_CLASS);
       cell.classList.remove(HIDE_CLASS);
-      if (sep) sep.classList.remove(HIDE_CLASS);
     }
+  }
+
+  function tweetUserHref(tweet) {
+    const uDiv = tweet.querySelector('div[data-testid="User-Name"]');
+    if (!uDiv) return null;
+    const a = uDiv.querySelector('a[href^="/"]');
+    return normalizeHref(a?.getAttribute("href"));
+  }
+
+  function tweetIsVerified(tweet) {
+    const uDiv = tweet.querySelector('div[data-testid="User-Name"]');
+    return !!uDiv?.querySelector('svg[data-testid="icon-verified"]');
+  }
+
+  function tweetStatusId(tweet) {
+    for (const a of tweet.querySelectorAll('a[href*="/status/"]')) {
+      const m = a.getAttribute("href").match(/^\/[^/]+\/status\/(\d+)$/);
+      if (m) return m[1];
+    }
+    return null;
   }
 
   function evaluate() {
     scheduled = false;
-    if (!isStatusUrl()) return;
+    const info = parseStatusUrl();
+    if (!info) return;
 
-    // Collect tweets in document order.
+    const statusKey = `${info.user}/${info.id}`;
+    if (statusKey !== currentStatusKey) {
+      currentStatusKey = statusKey;
+      ancestorIds = new Set();
+    }
+
     const tweets = Array.from(
       document.querySelectorAll('article[data-testid="tweet"]'),
     );
     if (tweets.length === 0) return;
 
-    const firstTweet = tweets[0];
+    const opHref = normalizeHref("/" + info.user);
+    const permalink = `/${info.user}/status/${info.id}`;
 
-    // OP link is taken from the first tweet's User-Name area
-    const firstUserLink = firstTweet.querySelector(
-      'div[data-testid="User-Name"] a[href]',
+    // Locate the focal (main) tweet in the current DOM, if present.
+    const mainIdx = tweets.findIndex((t) =>
+      t.querySelector(`a[href="${permalink}"]`),
     );
-    const opHref = normalizeHref(firstUserLink?.getAttribute("href"));
 
-    // Always ensure the first tweet is visible
-    setHidden(firstTweet, false);
-
-    // If opHref isn't available yet (SPA still rendering), don't hide anything yet.
-    if (!opHref) {
-      for (let i = 1; i < tweets.length; i++) setHidden(tweets[i], false);
-      return;
-    }
-
-    // Build set of allowed user hrefs: OP + URL author + their reply-to targets
-    const allowedHrefs = new Set([opHref]);
-
-    // Also whitelist the status page author from URL
-    const urlParts = location.pathname.split("/");
-    if (urlParts[1]) {
-      const h = normalizeHref("/" + urlParts[1]);
-      if (h) allowedHrefs.add(h);
-    }
-
-    // Collect "Replying to @user" targets from OP/URL-author tweets
-    const initialAllowed = new Set(allowedHrefs);
-    for (const t of tweets) {
-      const uDiv = t.querySelector('div[data-testid="User-Name"]');
-      if (!uDiv) continue;
-      const isByAllowed = Array.from(uDiv.querySelectorAll("a[href]"))
-        .map((a) => normalizeHref(a.getAttribute("href")))
-        .some((h) => initialAllowed.has(h));
-      if (!isByAllowed) continue;
-      const tweetTextDiv = t.querySelector('div[data-testid="tweetText"]');
-      for (const a of t.querySelectorAll("a[href]")) {
-        if (uDiv.contains(a)) continue;
-        if (tweetTextDiv && tweetTextDiv.contains(a)) continue;
-        const href = a.getAttribute("href");
-        if (
-          href &&
-          /^\/[a-zA-Z0-9_]+$/.test(href) &&
-          a.textContent.trim().startsWith("@")
-        ) {
-          const h = normalizeHref(href);
-          if (h) allowedHrefs.add(h);
-        }
+    // If the focal tweet is in the DOM, memoize ancestor IDs.
+    if (mainIdx !== -1) {
+      for (let i = 0; i < mainIdx; i++) {
+        const id = tweetStatusId(tweets[i]);
+        if (id) ancestorIds.add(id);
       }
     }
 
-    for (let i = 1; i < tweets.length; i++) {
+    for (let i = 0; i < tweets.length; i++) {
       const t = tweets[i];
+      const tid = tweetStatusId(t);
 
-      const hasVerifiedIcon = !!t.querySelector(
-        'svg[data-testid="icon-verified"]',
-      );
-
-      if (!hasVerifiedIcon) {
+      // Main tweet — keep.
+      if (tid && tid === info.id) {
         setHidden(t, false);
         continue;
       }
 
-      const userNameDiv = t.querySelector('div[data-testid="User-Name"]');
-      const hasAllowedLink =
-        !!userNameDiv &&
-        Array.from(userNameDiv.querySelectorAll("a[href]"))
-          .map((a) => normalizeHref(a.getAttribute("href")))
-          .some((h) => allowedHrefs.has(h));
+      // Known ancestor (OP is replying to it) — keep.
+      if (tid && ancestorIds.has(tid)) {
+        setHidden(t, false);
+        continue;
+      }
 
-      const shouldHide = !hasAllowedLink;
-      setHidden(t, shouldHide);
+      // Currently above the main tweet — also an ancestor; memoize & keep.
+      if (mainIdx !== -1 && i < mainIdx) {
+        if (tid) ancestorIds.add(tid);
+        setHidden(t, false);
+        continue;
+      }
+
+      // OP's own tweets (self-thread replies) — keep.
+      const userHref = tweetUserHref(t);
+      if (userHref && userHref === opHref) {
+        setHidden(t, false);
+        continue;
+      }
+
+      setHidden(t, tweetIsVerified(t));
     }
   }
 
   function scheduleEvaluate() {
     if (scheduled) return;
     scheduled = true;
-    // Micro-debounce to coalesce multiple DOM mutations
     setTimeout(evaluate, 5);
   }
 
@@ -178,6 +169,10 @@
       .forEach((el) => el.classList.remove(HIDE_CLASS));
   }
 
+  function isStatusUrl() {
+    return URL_RE.test(location.href);
+  }
+
   function onUrlPossiblyChanged() {
     const href = location.href;
     if (href === lastHref) return;
@@ -187,9 +182,10 @@
       connectObserver();
       scheduleEvaluate();
     } else {
-      // Leaving a status page: stop and revert
       disconnectObserver();
       unhideAll();
+      currentStatusKey = null;
+      ancestorIds = new Set();
     }
   }
 
@@ -215,17 +211,14 @@
   function bootstrap() {
     hookHistory();
 
-    // Initial state
     if (isStatusUrl()) {
       connectObserver();
       scheduleEvaluate();
     }
 
-    // Fallback polling (covers cases where SPA changes URL without history hooks firing as expected)
     setInterval(onUrlPossiblyChanged, 500);
   }
 
-  // document-start safe: wait for minimal DOM
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", bootstrap, { once: true });
   } else {
