@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X status: hide verified replies (SPA safe)
 // @namespace    https://example.invalid/
-// @version      2.4.0
+// @version      2.5.0
 // @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
 // @match        https://x.com/*
 // @run-at       document-start
@@ -125,6 +125,13 @@
 
       // Directly above an OP tweet — keep.
       if (aboveOpIdx.has(i)) {
+        setHidden(t, false);
+        continue;
+      }
+
+      // OP's own tweet — keep.
+      const userHref = tweetUserHref(t);
+      if (userHref && userHref === opHref) {
         setHidden(t, false);
         continue;
       }
