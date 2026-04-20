@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X status: hide verified replies (SPA safe)
 // @namespace    https://example.invalid/
-// @version      2.1.0
-// @description  On https://x.com/*/status/* pages, hide verified-user tweets in the reply section. Ancestors (tweets the OP is replying to) and OP's own tweets stay visible.
+// @version      2.3.0
+// @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
 // @match        https://x.com/*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -24,7 +24,6 @@
 
   // Per-status-URL state
   let currentStatusKey = null;
-  let ancestorIds = new Set();
 
   function normalizeHref(href) {
     if (!href) return null;
@@ -67,10 +66,26 @@
     return !!uDiv?.querySelector('svg[data-testid="icon-verified"]');
   }
 
-  function tweetStatusId(tweet) {
-    for (const a of tweet.querySelectorAll('a[href*="/status/"]')) {
-      const m = a.getAttribute("href").match(/^\/[^/]+\/status\/(\d+)$/);
-      if (m) return m[1];
+  function isBefore(a, b) {
+    return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  // Returns the first "Show replies" / "Show more replies" divider cell in
+  // DOM order. There may be several such buttons on the page (e.g. for
+  // nested sub-threads further down), so match explicitly by button text
+  // and take the top-most one as the conversation boundary.
+  function findShowRepliesBoundary() {
+    const SHOW_REPLIES_RE = /^show(\s+more)?\s+replies$/i;
+    for (const cell of document.querySelectorAll(
+      '[data-testid="cellInnerDiv"]',
+    )) {
+      if (cell.querySelector('article[data-testid="tweet"]')) continue;
+      for (const btn of cell.querySelectorAll("button")) {
+        const text = (btn.textContent || "").trim();
+        if (SHOW_REPLIES_RE.test(text) || /返信を表示/.test(text)) {
+          return cell;
+        }
+      }
     }
     return null;
   }
@@ -80,11 +95,7 @@
     const info = parseStatusUrl();
     if (!info) return;
 
-    const statusKey = `${info.user}/${info.id}`;
-    if (statusKey !== currentStatusKey) {
-      currentStatusKey = statusKey;
-      ancestorIds = new Set();
-    }
+    currentStatusKey = `${info.user}/${info.id}`;
 
     const tweets = Array.from(
       document.querySelectorAll('article[data-testid="tweet"]'),
@@ -92,47 +103,28 @@
     if (tweets.length === 0) return;
 
     const opHref = normalizeHref("/" + info.user);
-    const permalink = `/${info.user}/status/${info.id}`;
 
-    // Locate the focal (main) tweet in the current DOM, if present.
-    const mainIdx = tweets.findIndex((t) =>
-      t.querySelector(`a[href="${permalink}"]`),
-    );
-
-    // If the focal tweet is in the DOM, memoize ancestor IDs.
-    if (mainIdx !== -1) {
-      for (let i = 0; i < mainIdx; i++) {
-        const id = tweetStatusId(tweets[i]);
-        if (id) ancestorIds.add(id);
-      }
+    // Tweets whose NEXT neighbour in the DOM is an OP tweet. These sit
+    // directly above an OP tweet ("OP のツイートの一つ上のツイート").
+    const aboveOpIdx = new Set();
+    for (let i = 1; i < tweets.length; i++) {
+      const userHref = tweetUserHref(tweets[i]);
+      if (userHref && userHref === opHref) aboveOpIdx.add(i - 1);
     }
+
+    const showRepliesCell = findShowRepliesBoundary();
 
     for (let i = 0; i < tweets.length; i++) {
       const t = tweets[i];
-      const tid = tweetStatusId(t);
 
-      // Main tweet — keep.
-      if (tid && tid === info.id) {
+      // Above the first "Show replies" divider — keep.
+      if (showRepliesCell && isBefore(t, showRepliesCell)) {
         setHidden(t, false);
         continue;
       }
 
-      // Known ancestor (OP is replying to it) — keep.
-      if (tid && ancestorIds.has(tid)) {
-        setHidden(t, false);
-        continue;
-      }
-
-      // Currently above the main tweet — also an ancestor; memoize & keep.
-      if (mainIdx !== -1 && i < mainIdx) {
-        if (tid) ancestorIds.add(tid);
-        setHidden(t, false);
-        continue;
-      }
-
-      // OP's own tweets (self-thread replies) — keep.
-      const userHref = tweetUserHref(t);
-      if (userHref && userHref === opHref) {
+      // Directly above an OP tweet — keep.
+      if (aboveOpIdx.has(i)) {
         setHidden(t, false);
         continue;
       }
@@ -185,7 +177,6 @@
       disconnectObserver();
       unhideAll();
       currentStatusKey = null;
-      ancestorIds = new Set();
     }
   }
 
