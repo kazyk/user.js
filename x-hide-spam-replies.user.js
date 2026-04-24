@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X status: hide verified replies (SPA safe)
 // @namespace    https://example.invalid/
-// @version      2.5.0
-// @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
+// @version      2.6.1
+// @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Also hide replies that quote the reply author themselves, or that quote a verified account other than the OP. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
 // @match        https://x.com/*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -64,6 +64,29 @@
   function tweetIsVerified(tweet) {
     const uDiv = tweet.querySelector('div[data-testid="User-Name"]');
     return !!uDiv?.querySelector('svg[data-testid="icon-verified"]');
+  }
+
+  // An article that embeds a quoted tweet contains a second
+  // data-testid="UserAvatar-Container-<username>" (the first one is the reply
+  // author's avatar). The quoted tweet's own User-Name has no <a> — the
+  // surrounding role="link" wrapper handles navigation — so the username has
+  // to come from the avatar testid suffix. The verified flag is read from
+  // the second User-Name div, which sits next to that avatar.
+  function quotedTweetInfo(tweet) {
+    const avatars = tweet.querySelectorAll(
+      '[data-testid^="UserAvatar-Container-"]',
+    );
+    if (avatars.length < 2) return null;
+    const m = (avatars[1].getAttribute("data-testid") || "").match(
+      /^UserAvatar-Container-(.+)$/,
+    );
+    if (!m) return null;
+    const userNames = tweet.querySelectorAll('div[data-testid="User-Name"]');
+    const innerName = userNames[1] || null;
+    return {
+      userHref: normalizeHref("/" + m[1]),
+      verified: !!innerName?.querySelector('svg[data-testid="icon-verified"]'),
+    };
   }
 
   function isBefore(a, b) {
@@ -134,6 +157,20 @@
       if (userHref && userHref === opHref) {
         setHidden(t, false);
         continue;
+      }
+
+      const quote = quotedTweetInfo(t);
+      if (quote && quote.userHref) {
+        // Reply author quotes themselves.
+        if (userHref && quote.userHref === userHref) {
+          setHidden(t, true);
+          continue;
+        }
+        // Reply quotes a verified non-OP account.
+        if (quote.verified && quote.userHref !== opHref) {
+          setHidden(t, true);
+          continue;
+        }
       }
 
       setHidden(t, tweetIsVerified(t));
