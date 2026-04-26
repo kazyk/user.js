@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X status: hide verified replies (SPA safe)
 // @namespace    https://example.invalid/
-// @version      2.6.1
-// @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Also hide replies that quote the reply author themselves, or that quote a verified account other than the OP. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
+// @version      2.7.0
+// @description  On https://x.com/*/status/* pages, hide verified-user tweets below the "Show replies" divider. Also hide replies that quote the reply author themselves, that quote a verified account other than the OP, or that quote an account the viewer has blocked. Tweets above the first "Show replies" and tweets sitting directly above an OP tweet stay visible.
 // @match        https://x.com/*
 // @run-at       document-start
 // @grant        GM_addStyle
@@ -89,6 +89,19 @@
     };
   }
 
+  // A reply that quotes a blocked account renders the quote as a nested
+  // <article> placeholder ("This Post is from an account you blocked." /
+  // "ブロックしたアカウントの投稿です") instead of the usual div[role="link"]
+  // card. Normal quoted tweets do not nest <article> elements, so the
+  // presence of a nested article combined with the placeholder text is a
+  // reliable signal.
+  function replyQuotesBlockedAccount(tweet) {
+    const inner = tweet.querySelector("article");
+    if (!inner) return false;
+    const txt = inner.textContent || "";
+    return /account you blocked|ブロック/.test(txt);
+  }
+
   function isBefore(a, b) {
     return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
   }
@@ -156,6 +169,12 @@
       const userHref = tweetUserHref(t);
       if (userHref && userHref === opHref) {
         setHidden(t, false);
+        continue;
+      }
+
+      // Reply quotes a blocked account.
+      if (replyQuotesBlockedAccount(t)) {
+        setHidden(t, true);
         continue;
       }
 
